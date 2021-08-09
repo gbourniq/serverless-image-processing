@@ -1,0 +1,8 @@
+{
+    "name": "image-processing",
+    "description": "",
+    "version": "0.1.0",
+    "dependencies": {
+        "serverless-s3-remover": "^0.6.0"
+    }
+}

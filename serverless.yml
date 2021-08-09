@@ -1,0 +1,204 @@
+# https://www.serverless.com/framework/docs/providers/aws/guide/serverless.yml/
+
+frameworkVersion: '>=2.0.0 <=2.52.0'
+
+# Create the application in the Serverless Dashboard which provides
+# a secure way of storing AWS credentials and serverless.yml file secrets
+org: gbourniq
+app: image-processing
+service: image-processing
+
+custom:
+  defaultStage: dev
+  dynamodbTable: ${self:service}-${self:provider.stage}-dynamodb
+  SqsQueueName: ${self:service}-${self:provider.stage}-sqs-queue
+  bucketName: ${self:service}-${self:provider.stage}-gbournique-image-processing
+  bucket: ${self:custom.bucketName}
+  remover:
+    buckets:
+      - ${self:custom.bucketName}
+
+provider:
+  name: aws
+  runtime: python3.8
+  region: eu-west-2
+  profile: sls-admin
+  timeout: 10
+  memorySize: 128
+  iam:
+    role:
+      name: sls-role
+      statements:
+        - Effect: "Allow"
+          Action:
+            - "s3:*"
+          Resource: "*"
+        - Effect: Allow
+          Action:
+            - dynamodb:Query
+            - dynamodb:Scan
+            - dynamodb:GetItem
+            - dynamodb:PutItem
+            - dynamodb:UpdateItem
+            - dynamodb:DeleteItem
+          Resource: "arn:aws:dynamodb:${opt:region, self:provider.region}:*:table/${self:custom.dynamodbTable}"
+        - Effect: "Allow"
+          Action:
+            - "ec2:*"
+          Resource: "*"
+        # Policy for Lambda to interact with the SQS Queue
+        - Effect: Allow
+          Action:
+            - sqs:ReceiveMessage
+            - sqs:DeleteMessage
+            - sqs:GetQueueAttributes
+            - sqs:ChangeMessageVisibility
+            - sqs:GetQueueUrl
+            - sqs:SendMessage
+          Resource: !GetAtt SQSQueue.Arn
+  environment:
+    THUMBNAIL_SIZE: "128"
+    DYNAMODB_TABLE: ${self:custom.dynamodbTable}
+    BUCKET_NAME: ${self:custom.bucketName}
+    SQS_NAME: ${self:custom.SqsQueueName}
+  stage: ${opt:stage, self:custom.defaultStage}
+  tags:
+    environment: "dev"
+    email: "gbournique.dev1@gmail.com"
+
+package:
+  individually: true
+  patterns:
+    - "!**"
+    - image_processing/**
+
+layers:
+  Deps:
+    path: ./bin/lambda-layer/.
+    name: LambdaLayer
+    description: Python requirements lambda layer
+    package:
+      patterns:
+        - ./**
+    compatibleRuntimes:
+      - python3.8
+
+functions:
+
+  hello-world:
+    handler: image_processing/hello.handler
+    description: Sample hello world function
+    memorySize: 256
+    timeout: 6
+    layers:
+      - !Ref DepsLambdaLayer
+
+  slack-notifications:
+    handler: image_processing/slack_notifications.handler
+    description: |
+      Synchronous function polling SQS queue (Event source mapping) for Slack messages to deliver.
+      Using SQS prevents rate-limits on a third-party API when processing a large batch of messages.
+    memorySize: 256
+    timeout: 6
+    layers:
+      - !Ref DepsLambdaLayer
+    reservedConcurrency: 10 # Concurrency control
+    events:
+      - sqs:
+          arn:
+            Fn::GetAtt:
+              - SQSQueue
+              - Arn
+
+  s3-thumbnail-generator:
+    handler: image_processing/s3_thumbnail_generator.handler
+    runtime: python3.8
+    description: |
+      Function to generate a thumbnail when a new png image is uploaded
+      to the S3 bucket
+    layers:
+      - !Ref DepsLambdaLayer
+    events:
+      - s3:
+          bucket: ${self:custom.bucketName}
+          event: s3:ObjectCreated:*
+          rules:
+            - suffix: .png
+    destinations: # destinations for async invocations
+      onFailure: "arn:aws:sqs:${opt:region, self:provider.region}:${aws:accountId}:${self:custom.SqsQueueName}"
+      onSuccess: "arn:aws:sqs:${opt:region, self:provider.region}:${aws:accountId}:${self:custom.SqsQueueName}"
+      # https://github.com/serverless/serverless/issues/7492#issuecomment-610727635
+      # onFailure: !GetAtt SQSQueue.Arn
+
+  daily-stats:
+    handler: image_processing/daily_stats.handler
+    timeout: 60
+    layers:
+      - !Ref DepsLambdaLayer
+    events:
+      - schedule: cron(0 13 * * ? *) # run at 1 PM UTC every day (9 am EST)
+
+  list:
+    handler: image_processing/crud.list
+    layers:
+      - !Ref DepsLambdaLayer
+    events:
+      - http:
+          path: data
+          method: get
+          cors: true
+
+  get:
+    handler: image_processing/crud.get
+    layers:
+      - !Ref DepsLambdaLayer
+    events:
+      - http:
+          path: data/{id}
+          method: get
+          cors: true
+
+  update:
+    handler: image_processing/crud.update
+    layers:
+      - !Ref DepsLambdaLayer
+    events:
+      - http:
+          path: data/{id}
+          method: put
+          cors: true
+
+  delete:
+    handler: image_processing/crud.delete
+    layers:
+      - !Ref DepsLambdaLayer
+    events:
+      - http:
+          path: data/{id}
+          method: delete
+          cors: true
+
+plugins:
+  - serverless-s3-remover
+resources:
+  Resources:
+    SQSQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:custom.SqsQueueName}
+        DelaySeconds: 0
+        VisibilityTimeout: 120
+    DynamoDbTable:
+      Type: 'AWS::DynamoDB::Table'
+      DeletionPolicy: Delete
+      Properties:
+        AttributeDefinitions:
+          - AttributeName: id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: id
+            KeyType: HASH
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
+        TableName: ${self:custom.dynamodbTable}

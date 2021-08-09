@@ -1,0 +1,9 @@
+serverless sample project
+
+* AWS diagram for each lambda function (thumbnail + SNS/Slack notification + DynamoDB image metadata)
+* manage secret with aws parameter store? code from django-on-aws 
+* integrate pydantic + layer, makefile, existing CI/CD scripts, invoke local / sls test, and keep code simple
+* review and simplify code base
+* unit tests
+* Lambda destination
+* add README
