@@ -7,3 +7,7 @@ serverless sample project
 * unit tests
 * Lambda destination
 * add README
+* add x ray sdk
+* try integrating codedeploy? + versions / aliases
+* add dev/test/prod api stage and stage variables (see udemy course)
+* add step function to orchestrate a few lambda functions - read step function use cases
